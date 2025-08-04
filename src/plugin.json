@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/grafana/grafana/main/docs/sources/developers/plugins/plugin.schema.json",
+  "type": "datasource",
+  "backend": true,
+  "name": "Usage Event Backend",
+  "id": "grafana-usageeventbackend-datasource",
+  "executable": "grafana-usageeventbackend-datasource",
+  "metrics": true,
+  "info": {
+    "description": "Backend plugin to receive and persist dashboard usage events via an authenticated REST API.",
+    "author": {
+      "name": "Your Name or Team"
+    },
+    "keywords": ["datasource", "backend", "usage", "logging"],
+    "logos": {
+      "small": "img/logo.svg",
+      "large": "img/logo.svg"
+    },
+    "links": [],
+    "screenshots": [],
+    "version": "0.0.1",
+    "updated": "2025-07-26"
+  },
+  "dependencies": {
+    "grafanaDependency": ">=10.4.0",
+    "plugins": []
+  }
+}
