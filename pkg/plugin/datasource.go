@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -15,9 +16,10 @@ import (
 
 	"github.com/grafana/grafana-plugin-sdk-go/backend"
 	"github.com/grafana/grafana-plugin-sdk-go/backend/instancemgmt"
-	_ "github.com/lib/pq" // PostgreSQL driver
+	_ "github.com/lib/pq"
 )
 
+// --- INTERFACE COMPLIANCE ---
 var (
 	_ backend.QueryDataHandler      = (*Datasource)(nil)
 	_ backend.CheckHealthHandler    = (*Datasource)(nil)
@@ -25,29 +27,32 @@ var (
 	_ instancemgmt.InstanceDisposer = (*Datasource)(nil)
 )
 
+// --- TYPES ---
 type Datasource struct {
 	db         *sql.DB
 	grafanaURL string
 	apiKey     string
 }
 
-// --- STRUCTS ---
 type UsageEventRequest struct {
-	DashboardUID string  `json:"dashboard_uid"`
-	Username     string  `json:"username"`
-	UserID       *string `json:"user_id,omitempty"`
-	DashboardURL string  `json:"dashboard_url,omitempty"`
+	DashboardUID string `json:"dashboard_uid"`
+	Username     string `json:"username"`
+	Timestamp    string `json:"timestamp"` // ISO-8601 string
 }
 
+// Dashboard API response struct (partial)
 type dashboardAPIResp struct {
 	Dashboard struct {
 		ID    int64  `json:"id"`
 		UID   string `json:"uid"`
 		Title string `json:"title"`
 	} `json:"dashboard"`
+	Meta struct {
+		URL string `json:"url"`
+	} `json:"meta"`
 }
 
-// ------- INSTANCE & DB INIT -------
+// --- INSTANCE/DB INIT ---
 func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSettings) (instancemgmt.Instance, error) {
 	config, err := models.LoadPluginSettings(dsSettings)
 	if err != nil {
@@ -55,7 +60,6 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 		return nil, err
 	}
 
-	// Trim API key to avoid whitespace issues
 	apiKey := strings.TrimSpace(config.Secrets.ApiKey)
 
 	dbHost := os.Getenv("GF_DATABASE_HOST")
@@ -113,14 +117,14 @@ func (d *Datasource) Dispose() {
 	}
 }
 
-// ------- RESOURCE HANDLER -------
+// --- RESOURCE HANDLER ---
 func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResourceRequest, sender backend.CallResourceResponseSender) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			backend.Logger.Error("[PANIC RECOVER]", "panic", r)
 			err = sender.Send(&backend.CallResourceResponse{
 				Status: http.StatusInternalServerError,
-				Body:   []byte(fmt.Sprintf("Internal server error: %v", r)),
+				Body:   []byte(fmt.Sprintf("internal server error: %v", r)),
 			})
 		}
 	}()
@@ -133,7 +137,7 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			backend.Logger.Warn("Method not allowed", "method", req.Method)
 			return sender.Send(&backend.CallResourceResponse{
 				Status: http.StatusMethodNotAllowed,
-				Body:   []byte("Method not allowed"),
+				Body:   []byte("method not allowed"),
 			})
 		}
 
@@ -142,14 +146,22 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			backend.Logger.Error("Invalid JSON", "err", err)
 			return sender.Send(&backend.CallResourceResponse{
 				Status: http.StatusBadRequest,
-				Body:   []byte("Invalid JSON"),
+				Body:   []byte("invalid JSON"),
 			})
 		}
-		backend.Logger.Debug("Received usage event", "event", evt)
+		backend.Logger.Info("Received usage event", "event", evt)
 
-		dashID, dashTitle, err := d.fetchDashboardDetails(evt.DashboardUID)
+		// Parse timestamp
+		eventTime, err := time.Parse(time.RFC3339, evt.Timestamp)
 		if err != nil {
-			errMsg := fmt.Sprintf("Failed to fetch dashboard: %v", err)
+			backend.Logger.Warn("Invalid timestamp format, using now", "err", err)
+			eventTime = time.Now()
+		}
+
+		// Fetch dashboard details
+		dashID, dashTitle, dashURL, err := d.fetchDashboardDetails(evt.DashboardUID)
+		if err != nil {
+			errMsg := fmt.Sprintf("failed to fetch dashboard: %v", err)
 			backend.Logger.Error(errMsg)
 			return sender.Send(&backend.CallResourceResponse{
 				Status: http.StatusInternalServerError,
@@ -157,27 +169,25 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			})
 		}
 
-		now := time.Now()
-
-		// Log final POST request data before DB insert
-		backend.Logger.Info("Inserting usage event",
-			"dashboard_id", dashID,
-			"dashboard_uid", evt.DashboardUID,
-			"dashboard_title", dashTitle,
-			"dashboard_url", evt.DashboardURL,
-			"user_id", evt.UserID,
-			"username", evt.Username,
-			"event_time", now.String(),
-		)
-
-		_, err = d.db.Exec(`
-            INSERT INTO usage_event (
-                dashboard_id, dashboard_uid, dashboard_title, dashboard_url, user_id, username, event_time
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			dashID, evt.DashboardUID, dashTitle, evt.DashboardURL, evt.UserID, evt.Username, now)
-
+		// Fetch user_id
+		userID, err := d.fetchUserID(evt.Username)
 		if err != nil {
-			errMsg := fmt.Sprintf("DB error: %v", err)
+			backend.Logger.Warn("user ID lookup failed, logging without user_id", "username", evt.Username, "err", err)
+			userID = nil // allow insert with null
+		}
+
+		// Insert into DB
+		_, err = d.db.Exec(`
+			INSERT INTO usage_event (
+				dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
+				user_id, username, event_time
+			) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`,
+			dashID, evt.DashboardUID, dashTitle, dashURL,
+			userID, evt.Username, eventTime,
+		)
+		if err != nil {
+			errMsg := fmt.Sprintf("db error: %v", err)
 			backend.Logger.Error(errMsg)
 			return sender.Send(&backend.CallResourceResponse{
 				Status: http.StatusInternalServerError,
@@ -192,57 +202,69 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		backend.Logger.Error("Not found resource path", "path", req.Path)
 		return sender.Send(&backend.CallResourceResponse{
 			Status: http.StatusNotFound,
-			Body:   []byte("Not found"),
+			Body:   []byte("not found"),
 		})
 	}
 }
 
-// ------ UTIL: Fetch Dash Metadata ------
-func (d *Datasource) fetchDashboardDetails(uid string) (int64, string, error) {
+// --- DASHBOARD DETAILS FETCH ---
+func (d *Datasource) fetchDashboardDetails(uid string) (int64, string, string, error) {
 	url := fmt.Sprintf("%s/api/dashboards/uid/%s", d.grafanaURL, uid)
-	backend.Logger.Info("Fetching dashboard details", "url", url)
-
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		backend.Logger.Error("Failed building dashboard fetch request", "err", err)
-		return 0, "", err
+		return 0, "", "", err
 	}
-
-	// apiKey := strings.TrimSpace(d.apiKey)
-	backend.Logger.Debug("Setting Authorization header")
 	req.Header.Set("Authorization", "Bearer "+"")
-
-	// Debug log all headers before sending
-	for k, v := range req.Header {
-		backend.Logger.Info("Request header", "key", k, "value", strings.Join(v, ","))
-	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		backend.Logger.Error("Dashboard fetch HTTP call failed", "err", err)
-		return 0, "", err
+		return 0, "", "", err
 	}
 	defer resp.Body.Close()
 
-	backend.Logger.Info("Dashboard fetch response status", "status", resp.StatusCode)
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
-		backend.Logger.Error("Dashboard API call non-200", "status", resp.StatusCode, "body", string(body))
-		return 0, "", fmt.Errorf("API status %d: %s", resp.StatusCode, string(body))
+		return 0, "", "", fmt.Errorf("dashboard API status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var out dashboardAPIResp
-	dec := json.NewDecoder(resp.Body)
-	if err := dec.Decode(&out); err != nil {
-		backend.Logger.Error("Failed to decode dashboard API response", "err", err)
-		return 0, "", err
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, "", "", err
 	}
-
-	backend.Logger.Info("Dashboard fetched successfully", "dashboard_id", out.Dashboard.ID, "title", out.Dashboard.Title)
-	return out.Dashboard.ID, out.Dashboard.Title, nil
+	return out.Dashboard.ID, out.Dashboard.Title, out.Meta.URL, nil
 }
 
-// -------- TEMPLATE: Query/Health --------
+// --- USER ID FETCH ---
+func (d *Datasource) fetchUserID(username string) (*int64, error) {
+	encUsername := url.QueryEscape(username) // <- URL encode the username
+	url := fmt.Sprintf("%s/api/users/lookup?loginOrEmail=%s", d.grafanaURL, encUsername)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+"")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("user lookup status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var user struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, err
+	}
+	return &user.ID, nil
+}
+
+// --- QUERY/DUMMY/HEALTH HANDLERS ---
 func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataRequest) (*backend.QueryDataResponse, error) {
 	response := backend.NewQueryDataResponse()
 	for _, q := range req.Queries {
