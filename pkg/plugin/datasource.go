@@ -60,7 +60,7 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 		return nil, err
 	}
 
-	apiKey := strings.TrimSpace(config.Secrets.ApiKey)
+	// apiKey := strings.TrimSpace(config.Secrets.ApiKey)
 
 	dbHost := os.Getenv("GF_DATABASE_HOST")
 	dbPort := os.Getenv("GF_DATABASE_PORT")
@@ -107,7 +107,7 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 	return &Datasource{
 		db:         db,
 		grafanaURL: config.GrafanaURL,
-		apiKey:     apiKey,
+		apiKey:     "",
 	}, nil
 }
 
@@ -169,6 +169,26 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			})
 		}
 
+		// Determine application_name based on dashboard title
+		applicationName := ""
+		titleLower := strings.ToLower(dashTitle)
+		switch {
+		case strings.Contains(titleLower, "gps"):
+			applicationName = "GPS"
+		case strings.Contains(titleLower, "cec"):
+			applicationName = "CEC"
+		case strings.Contains(titleLower, "node"):
+			applicationName = "Node"
+		case strings.Contains(titleLower, "dockenquiry"):
+			applicationName = "Dockenquiry"
+		case strings.Contains(titleLower, "ava"):
+			applicationName = "AVA"
+		case strings.Contains(titleLower, "usagemetrics"):
+			applicationName = "UsageMetrics"
+		default:
+			applicationName = ""
+		}
+
 		// Fetch user_id
 		userID, err := d.fetchUserID(evt.Username)
 		if err != nil {
@@ -176,15 +196,15 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			userID = nil // allow insert with null
 		}
 
-		// Insert into DB
+		// Insert into DB with application_name
 		_, err = d.db.Exec(`
 			INSERT INTO usage_event (
 				dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
-				user_id, username, event_time
-			) VALUES ($1, $2, $3, $4, $5, $6, $7)
+				user_id, username, application_name, event_time
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		`,
 			dashID, evt.DashboardUID, dashTitle, dashURL,
-			userID, evt.Username, eventTime,
+			userID, evt.Username, applicationName, eventTime,
 		)
 		if err != nil {
 			errMsg := fmt.Sprintf("db error: %v", err)
@@ -214,7 +234,7 @@ func (d *Datasource) fetchDashboardDetails(uid string) (int64, string, string, e
 	if err != nil {
 		return 0, "", "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+"")
+	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -236,13 +256,13 @@ func (d *Datasource) fetchDashboardDetails(uid string) (int64, string, string, e
 
 // --- USER ID FETCH ---
 func (d *Datasource) fetchUserID(username string) (*int64, error) {
-	encUsername := url.QueryEscape(username) // <- URL encode the username
+	encUsername := url.QueryEscape(username) // URL encode the username
 	url := fmt.Sprintf("%s/api/users/lookup?loginOrEmail=%s", d.grafanaURL, encUsername)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+"")
+	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
