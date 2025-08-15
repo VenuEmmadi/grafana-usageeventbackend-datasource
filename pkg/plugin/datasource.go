@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -35,9 +34,10 @@ type Datasource struct {
 }
 
 type UsageEventRequest struct {
-	DashboardUID string `json:"dashboard_uid"`
-	Username     string `json:"username"`
-	Timestamp    string `json:"timestamp"` // ISO-8601 string
+	DashboardUID string  `json:"dashboard_uid"`
+	Username     string  `json:"username"`
+	UserID       *string `json:"user_id"`
+	Timestamp    string  `json:"timestamp"` // ISO-8601 string
 }
 
 // Dashboard API response struct (partial)
@@ -59,8 +59,6 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 		backend.Logger.Error("Failed to load plugin settings", "err", err)
 		return nil, err
 	}
-
-	// apiKey := strings.TrimSpace(config.Secrets.ApiKey)
 
 	dbHost := os.Getenv("GF_DATABASE_HOST")
 	dbPort := os.Getenv("GF_DATABASE_PORT")
@@ -175,6 +173,8 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		switch {
 		case strings.Contains(titleLower, "gps"):
 			applicationName = "GPS"
+		case strings.Contains(titleLower, "usage"):
+			applicationName = "UsageMetricsDashboard"
 		case strings.Contains(titleLower, "cec"):
 			applicationName = "CEC"
 		case strings.Contains(titleLower, "node"):
@@ -189,20 +189,16 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			applicationName = ""
 		}
 
-		// Fetch user_id
-		userID, err := d.fetchUserID(evt.Username)
-		if err != nil {
-			backend.Logger.Warn("user ID lookup failed, logging without user_id", "username", evt.Username, "err", err)
-			userID = nil // allow insert with null
-		}
+		// Use user_id from payload (can be nil)
+		userID := evt.UserID
 
 		// Insert into DB with application_name
 		_, err = d.db.Exec(`
-			INSERT INTO usage_event (
-				dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
-				user_id, username, application_name, event_time
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		`,
+            INSERT INTO usage_event (
+                dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
+                user_id, username, application_name, event_time
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `,
 			dashID, evt.DashboardUID, dashTitle, dashURL,
 			userID, evt.Username, applicationName, eventTime,
 		)
@@ -252,36 +248,6 @@ func (d *Datasource) fetchDashboardDetails(uid string) (int64, string, string, e
 		return 0, "", "", err
 	}
 	return out.Dashboard.ID, out.Dashboard.Title, out.Meta.URL, nil
-}
-
-// --- USER ID FETCH ---
-func (d *Datasource) fetchUserID(username string) (*int64, error) {
-	encUsername := url.QueryEscape(username) // URL encode the username
-	url := fmt.Sprintf("%s/api/users/lookup?loginOrEmail=%s", d.grafanaURL, encUsername)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+d.apiKey)
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("user lookup status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var user struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return nil, err
-	}
-	return &user.ID, nil
 }
 
 // --- QUERY/DUMMY/HEALTH HANDLERS ---
