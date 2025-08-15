@@ -12,8 +12,8 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
   };
 
   const onConstantChange = (event: ChangeEvent<HTMLInputElement>) => {
-    onChange({ ...query, constant: parseFloat(event.target.value) });
-    // executes the query
+    const val = parseFloat(event.target.value);
+    onChange({ ...query, constant: isNaN(val) ? 0 : val });
     onRunQuery();
   };
 
@@ -25,7 +25,7 @@ export function QueryEditor({ query, onChange, onRunQuery }: Props) {
         <Input
           id="query-editor-constant"
           onChange={onConstantChange}
-          value={constant}
+          value={constant ?? ''}
           width={8}
           type="number"
           step="0.1"

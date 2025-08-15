@@ -24,6 +24,8 @@ export function ConfigEditor(props: Props) {
     onOptionsChange({
       ...options,
       secureJsonData: {
+        // Preserve other secure fields
+        ...secureJsonData,
         apiKey: event.target.value,
       },
     });
@@ -33,11 +35,13 @@ export function ConfigEditor(props: Props) {
     onOptionsChange({
       ...options,
       secureJsonFields: {
-        ...options.secureJsonFields,
+        // Preserve other secure field flags
+        ...secureJsonFields,
         apiKey: false,
       },
       secureJsonData: {
-        ...options.secureJsonData,
+        // Clear the API key but keep other secure fields
+        ...secureJsonData,
         apiKey: '',
       },
     });
@@ -58,8 +62,8 @@ export function ConfigEditor(props: Props) {
         <SecretInput
           required
           id="config-editor-api-key"
-          isConfigured={secureJsonFields.apiKey}
-          value={secureJsonData?.apiKey}
+          isConfigured={!!secureJsonFields.apiKey}
+          value={secureJsonData?.apiKey || ''}
           placeholder="Enter your API key"
           width={40}
           onReset={onResetAPIKey}

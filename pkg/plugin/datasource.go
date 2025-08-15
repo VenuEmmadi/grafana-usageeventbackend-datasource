@@ -94,9 +94,23 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 		backend.Logger.Error("Failed to open db", "err", err)
 		return nil, fmt.Errorf("failed to open db: %w", err)
 	}
+
+	// Tune connection pool
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Hour)
+
 	if err := db.Ping(); err != nil {
 		backend.Logger.Error("Failed to connect db", "err", err)
 		return nil, fmt.Errorf("failed to connect db: %w", err)
+	}
+
+	// Use API key from secure json settings
+	apiKey := ""
+	if v, ok := dsSettings.DecryptedSecureJSONData["apiKey"]; ok {
+		apiKey = v
+	} else {
+		backend.Logger.Warn("API key for Grafana not set in secure settings")
 	}
 
 	backend.Logger.Info("Datasource initialized successfully")
@@ -105,7 +119,7 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 	return &Datasource{
 		db:         db,
 		grafanaURL: config.GrafanaURL,
-		apiKey:     "",
+		apiKey:     apiKey,
 	}, nil
 }
 
@@ -156,15 +170,13 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			eventTime = time.Now()
 		}
 
-		// Fetch dashboard details
+		// Fetch dashboard details with fallback
 		dashID, dashTitle, dashURL, err := d.fetchDashboardDetails(evt.DashboardUID)
 		if err != nil {
-			errMsg := fmt.Sprintf("failed to fetch dashboard: %v", err)
-			backend.Logger.Error(errMsg)
-			return sender.Send(&backend.CallResourceResponse{
-				Status: http.StatusInternalServerError,
-				Body:   []byte(errMsg),
-			})
+			backend.Logger.Warn("Failed to fetch dashboard details, will fallback to limited info", "err", err)
+			dashID = 0
+			dashTitle = ""
+			dashURL = ""
 		}
 
 		// Determine application_name based on dashboard title
@@ -189,10 +201,9 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 			applicationName = ""
 		}
 
-		// Use user_id from payload (can be nil)
 		userID := evt.UserID
 
-		// Insert into DB with application_name
+		// Insert into DB - always attempt insert, even if dashboard fetch failed
 		_, err = d.db.Exec(`
             INSERT INTO usage_event (
                 dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
