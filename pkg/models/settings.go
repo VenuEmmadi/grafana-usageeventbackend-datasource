@@ -10,8 +10,8 @@ import (
 
 type PluginSettings struct {
 	GrafanaURL string                `json:"grafanaURL"`
+	Path       string                `json:"path"`
 	Secrets    *SecretPluginSettings `json:"-"`
-	// You can add DB config fields here if you wish to allow connection override.
 }
 
 type SecretPluginSettings struct {
@@ -25,7 +25,7 @@ func LoadPluginSettings(source backend.DataSourceInstanceSettings) (*PluginSetti
 	}
 	settings.Secrets = loadSecretPluginSettings(source.DecryptedSecureJSONData)
 	if settings.GrafanaURL == "" {
-		settings.GrafanaURL = "http://localhost:3001"
+		settings.GrafanaURL = "http://localhost:3000"
 	}
 	return &settings, nil
 }

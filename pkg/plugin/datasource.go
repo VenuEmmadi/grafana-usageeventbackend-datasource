@@ -113,6 +113,11 @@ func NewDatasource(_ context.Context, dsSettings backend.DataSourceInstanceSetti
 		backend.Logger.Warn("API key for Grafana not set in secure settings")
 	}
 
+	if config.Path != "" {
+		// build the URL from path or use path as base URL if it is full URL
+		config.GrafanaURL = config.Path
+	}
+
 	backend.Logger.Info("Datasource initialized successfully")
 	backend.Logger.Info("Using Grafana URL", "url", config.GrafanaURL)
 
@@ -183,35 +188,77 @@ func (d *Datasource) CallResource(ctx context.Context, req *backend.CallResource
 		applicationName := ""
 		titleLower := strings.ToLower(dashTitle)
 		switch {
-		case strings.Contains(titleLower, "gps"):
-			applicationName = "GPS"
+		case strings.Contains(titleLower, "ava"):
+			applicationName = "AVA"
+		case strings.Contains(titleLower, "clinical"):
+			applicationName = "Clinical"
+		case strings.Contains(titleLower, "docfind"):
+			applicationName = "DocFind"
+		case strings.Contains(titleLower, "documentinquiryv1"):
+			applicationName = "DocumentInquiryv1"
+		case strings.Contains(titleLower, "documentinquiryvII"):
+			applicationName = "DocumentInquiryvII"
+		case strings.Contains(titleLower, "documentviewer"):
+			applicationName = "documentviewer"
+		case strings.Contains(titleLower, "edi"):
+			applicationName = "EDI-Gateway"
+		case strings.Contains(titleLower, "eicorrespondence"):
+			applicationName = "EICorrespondence"
+		case strings.Contains(titleLower, "esds"):
+			applicationName = "ESDS"
+		case strings.Contains(titleLower, "iop"):
+			applicationName = "IOP"
+		case strings.Contains(titleLower, "ipp"):
+			applicationName = "IPP"
+		case strings.Contains(titleLower, "transparency"):
+			applicationName = "IVL_Transparency"
+		case strings.Contains(titleLower, "kana"):
+			applicationName = "KANA"
+		case strings.Contains(titleLower, "medicaidwebportal"):
+			applicationName = "MedicaidWebPortal"
+		case strings.Contains(titleLower, "odm"):
+			applicationName = "ODM"
+		case strings.Contains(titleLower, "ppapi"):
+			applicationName = "PPAPI"
+		case strings.Contains(titleLower, "rxbor"):
+			applicationName = "RxBoR"
+		case strings.Contains(titleLower, "smart"):
+			applicationName = "Smart"
+		case strings.Contains(titleLower, "yava"):
+			applicationName = "YAVA"
 		case strings.Contains(titleLower, "usage"):
 			applicationName = "UsageMetricsDashboard"
 		case strings.Contains(titleLower, "cec"):
 			applicationName = "CEC"
 		case strings.Contains(titleLower, "node"):
 			applicationName = "Node"
-		case strings.Contains(titleLower, "dockenquiry"):
-			applicationName = "Dockenquiry"
-		case strings.Contains(titleLower, "ava"):
-			applicationName = "AVA"
-		case strings.Contains(titleLower, "usagemetrics"):
-			applicationName = "UsageMetrics"
 		default:
 			applicationName = ""
+		}
+
+		// Determine signal value based on dashboard title
+		signal := ""
+		titleLowervar2 := strings.ToLower(dashTitle)
+		switch {
+		case strings.Contains(titleLowervar2, "log"):
+			signal = "Logs"
+		case strings.Contains(titleLowervar2, "trace") || strings.Contains(titleLowervar2, "tracing"):
+			signal = "Traces"
+		default:
+			signal = "Metrics"
 		}
 
 		userID := evt.UserID
 
 		// Insert into DB - always attempt insert, even if dashboard fetch failed
 		_, err = d.db.Exec(`
-            INSERT INTO usage_event (
-                dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
-                user_id, username, application_name, event_time
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        `,
+			INSERT INTO usage_event (
+				dashboard_id, dashboard_uid, dashboard_title, dashboard_url,
+				user_id, username, application_name, event_time, signal
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`,
 			dashID, evt.DashboardUID, dashTitle, dashURL,
-			userID, evt.Username, applicationName, eventTime,
+			userID, evt.Username, applicationName, eventTime, signal,
 		)
 		if err != nil {
 			errMsg := fmt.Sprintf("db error: %v", err)
